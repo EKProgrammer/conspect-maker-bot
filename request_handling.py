@@ -15,6 +15,8 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 import requests
+from urllib.parse import urlencode
+
 
 # from speech_to_text import recognition
 
@@ -42,6 +44,21 @@ async def cut_audio_from_file(file_path) -> None:
     """Выделение аудиодорожки из видео"""
     audio = AudioSegment.from_file(file_path)
     audio.export("src/audio.mp3", format="mp3")
+
+
+async def audio_processing_with_error_output(update, context, filename):
+    """Обработка аудио с выводом возможных ошибок"""
+    count_audio_streams = await has_audio_streams(filename)
+    if count_audio_streams > 0:
+        await cut_audio_from_file(filename)
+        context.user_data["input_audio_file_path"] = "src/audio.mp3"
+    elif count_audio_streams == -1:
+        await update.message.reply_text("Файл не может быть декодирован, возможно он повреждён. Отправьте другой файл.")
+        return 1
+    else:
+        await update.message.reply_text("Файл не имеет аудиопотока. Отправьте другой файл.")
+        return 1
+    await update.message.reply_text("Скачивание завершено.")
 
 
 async def downloading_from_telegram(data_instance) -> None:
@@ -90,17 +107,7 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if update.message.document.file_size <= 10 * 1024 * 1024 * 1024:
             await update.message.reply_text("Скачивание...")
             await downloading_from_telegram(update.message.document)
-            count_audio_streams = await has_audio_streams("src/" + update.message.document.file_name)
-            if count_audio_streams > 0:
-                await cut_audio_from_file("src/" + update.message.document.file_name)
-                context.user_data["input_audio_file_path"] = "src/audio.mp3"
-            elif count_audio_streams == -1:
-                await update.message.reply_text("Файл не может быть декодирован, возможно он повреждён. Отправьте другой файл.")
-                return 1
-            else:
-                await update.message.reply_text("Файл не имеет аудиопотока. Отправьте другой файл.")
-                return 1
-            await update.message.reply_text("Скачивание завершено.")
+            await audio_processing_with_error_output(update, context, "src/" + update.message.document.file_name)
         else:
             await update.message.reply_text(
                 "Файл имеет слишком большой объём. Существует ограничение на размера файла в 10 Гбайт. Отправьте файл меньшего размера.")
@@ -130,7 +137,8 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             try:
                 information = service.files().get(fileId=file_id, fields="name,size").execute()
             except HttpError as error:
-                await update.message.reply_text(f"Http ошибка: {error.status_code}")
+                await update.message.reply_text(
+                    f"Http ошибка: {error.status_code}. Проверьте, что в настройках доступа к файлу статус (\"Все, у кого есть ссылка\") и url указан корректно.")
                 print(error)
                 return 1
             # Проверка веса файла
@@ -148,20 +156,10 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     with open("src/" + information["name"], "wb") as f:
                         f.write(file.getvalue())
                 except HttpError as error:
-                    await update.message.reply_text(f"Http ошибка: {error.status_code}")
+                    await update.message.reply_text(f"Http ошибка: {error.status_code}.")
                     print(error)
                     return 1
-                count_audio_streams = await has_audio_streams("src/" + information["name"])
-                if count_audio_streams > 0:
-                    await cut_audio_from_file("src/" + information["name"])
-                    context.user_data["input_audio_file_path"] = "src/audio.mp3"
-                elif count_audio_streams == -1:
-                    await update.message.reply_text("Файл не может быть декодирован, возможно он повреждён. Отправьте другой файл.")
-                    return 1
-                else:
-                    await update.message.reply_text("Файл не имеет аудиопотока. Отправьте другой файл.")
-                    return 1
-                await update.message.reply_text("Скачивание завершено.")
+                await audio_processing_with_error_output(update, context, "src/" + information["name"])
             else:
                 await update.message.reply_text(
                     "Файл имеет слишком большой объём. Существует ограничение на размер файла в 10 Гбайт. Отправьте файл меньшего размера.")
@@ -169,7 +167,27 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         elif update.message.text[:23] == "https://disk.yandex.ru/":
             # Загрузка файла с Yandex.Disk
-            pass
+            information = requests.get("https://compute.api.cloud.yandex.net/compute/v1/filesystems/" +
+                                       update.message.text[25:]).json()
+            print(information)
+            if int(information["size"]) <= 10 * 1024 * 1024 * 1024:
+                base_url = 'https://cloud-api.yandex.net/v1/disk/public/resources/download?'
+                # Получаем загрузочную ссылку
+                final_url = base_url + "public_key=" + update.message.text[23:]
+                # public_key = update.message.text[23:]
+                # final_url = base_url + urlencode(dict(public_key=public_key))
+                response = requests.get(final_url)
+                download_url = response.json()['href']
+                # Загружаем файл и сохраняем его
+                download_response = requests.get(download_url)
+                await update.message.reply_text("Скачивание завершено.")
+                with open("src/" + information["name"], 'wb') as f:
+                    f.write(download_response.content)
+                await audio_processing_with_error_output(update, context, "src/" + information["name"])
+            else:
+                await update.message.reply_text(
+                    "Файл имеет слишком большой объём. Существует ограничение на размер файла в 10 Гбайт. Отправьте файл меньшего размера.")
+                return 1
 
         else:
             # Сообщение об ошибке
