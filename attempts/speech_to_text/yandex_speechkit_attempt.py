@@ -1,5 +1,5 @@
-from speech_to_text import model_repository, configure_credentials, creds
-from speech_to_text.stt import AudioProcessingType
+from transcription import model_repository, configure_credentials, creds
+from transcription.stt import AudioProcessingType
 
 # Аутентификация через API-ключ.
 configure_credentials(

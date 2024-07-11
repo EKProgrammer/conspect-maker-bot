@@ -1,13 +1,12 @@
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
-from subprocess import check_output, CalledProcessError
+import subprocess
 import json
 
 from pydub import AudioSegment
 
-from pytube import YouTube
-from pytube.exceptions import RegexMatchError
+import isodate
 
 import io
 from googleapiclient.discovery import build
@@ -17,8 +16,13 @@ from googleapiclient.http import MediaIoBaseDownload
 import requests
 from urllib.parse import urlencode
 
+from transcription import recognition
 
-# from speech_to_text import recognition
+from config import YOUTUBE_API_KEY, GOOGLE_DRIVE_API_KEY
+
+# константы
+WEIGHT_FILE_LIMIT = 5 * 1024 * 1024 * 1024
+FILE_DURATION_LIMIT = 2 * 60 * 60
 
 
 async def beginning_of_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -31,23 +35,29 @@ async def has_audio_streams(file_path) -> int:
     """Проверка наличия аудиопотока"""
     try:
         command = ['ffprobe', '-show_streams', '-print_format', 'json', file_path]
-        output = check_output(command)
+        output = subprocess.check_output(command)
         parsed = json.loads(output)
         streams = parsed['streams']
         audio_streams = list(filter((lambda x: x['codec_type'] == 'audio'), streams))
         return len(audio_streams)
-    except CalledProcessError:
+    except subprocess.CalledProcessError:
         return -1
 
 
-async def cut_audio_from_file(file_path) -> None:
+async def cut_audio_from_file(file_path: str) -> None:
     """Выделение аудиодорожки из видео"""
     audio = AudioSegment.from_file(file_path)
     audio.export("src/audio.mp3", format="mp3")
 
 
-async def audio_processing_with_error_output(update, context, filename):
+async def audio_processing_with_error_output(update: Update, context: ContextTypes.DEFAULT_TYPE, filename: str):
     """Обработка аудио с выводом возможных ошибок"""
+    audio_file = AudioSegment.from_file(filename)
+    duration = audio_file.duration_seconds
+    if duration <= WEIGHT_FILE_LIMIT:
+        await print_max_duration_error(Update)
+        return 1
+
     count_audio_streams = await has_audio_streams(filename)
     if count_audio_streams > 0:
         await cut_audio_from_file(filename)
@@ -67,6 +77,16 @@ async def downloading_from_telegram(data_instance) -> None:
     await file_instance.download_to_drive(custom_path="src/" + data_instance.file_name)
 
 
+async def print_max_weight_error(update):
+    await update.message.reply_text(
+        "Файл имеет слишком большой объём. Существует ограничение на размер файла в 5 Гбайт. Отправьте файл меньшего размера.")
+
+
+async def print_max_duration_error(update):
+    await update.message.reply_text(
+        "Файл имеет слишком большую длительность. Существует ограничение на длительность файла в 2 часа. Отправьте файл меньшей длительности.")
+
+
 async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Проверка корректности запроса и выбор формата конспекта"""
     print("============Debug============")
@@ -79,59 +99,71 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # telegram audio
     if update.message.audio is not None:
-        if update.message.audio.file_size <= 10 * 1024 * 1024 * 1024:
-            await update.message.reply_text("Скачивание...")
-            await downloading_from_telegram(update.message.audio)
-            await update.message.reply_text("Скачивание завершено.")
-            context.user_data["input_audio_file_path"] = "src/" + update.message.audio.file_name
+        if update.message.audio.file_size <= WEIGHT_FILE_LIMIT:
+            if update.message.audio.duration <= FILE_DURATION_LIMIT:
+                await update.message.reply_text("Скачивание...")
+                await downloading_from_telegram(update.message.audio)
+                await update.message.reply_text("Скачивание завершено.")
+                context.user_data["input_audio_file_path"] = "src/" + update.message.audio.file_name
+            else:
+                await print_max_duration_error(update)
+                return 1
         else:
-            await update.message.reply_text(
-                "Файл имеет слишком большой объём. Существует ограничение на файл в 10 Гбайт. Отправьте файл меньшего размера.")
+            await print_max_weight_error(update)
             return 1
 
     # telegram video
     elif update.message.video is not None:
-        if update.message.video.file_size <= 10 * 1024 * 1024 * 1024:
-            await update.message.reply_text("Скачивание...")
-            await downloading_from_telegram(update.message.video)
-            await cut_audio_from_file("src/" + update.message.video.file_name)
-            context.user_data["input_audio_file_path"] = "src/audio.mp3"
-            await update.message.reply_text("Скачивание завершено.")
+        if update.message.video.file_size <= WEIGHT_FILE_LIMIT:
+            if update.message.video.duration <= FILE_DURATION_LIMIT:
+                await update.message.reply_text("Скачивание...")
+                await downloading_from_telegram(update.message.video)
+                await cut_audio_from_file("src/" + update.message.video.file_name)
+                context.user_data["input_audio_file_path"] = "src/audio.mp3"
+                await update.message.reply_text("Скачивание завершено.")
+            else:
+                await print_max_duration_error(update)
+                return 1
         else:
-            await update.message.reply_text(
-                "Файл имеет слишком большой объём. Существует ограничение на размер файла в 10 Гбайт. Отправьте файл меньшего размера.")
+            await print_max_weight_error(update)
             return 1
 
     # telegram document
     elif update.message.document is not None:
-        if update.message.document.file_size <= 10 * 1024 * 1024 * 1024:
+        if update.message.document.file_size <= WEIGHT_FILE_LIMIT:
             await update.message.reply_text("Скачивание...")
             await downloading_from_telegram(update.message.document)
-            await audio_processing_with_error_output(update, context, "src/" + update.message.document.file_name)
+            result = await audio_processing_with_error_output(
+                update, context, "src/" + update.message.document.file_name)
+            if result == 1:
+                return result
         else:
-            await update.message.reply_text(
-                "Файл имеет слишком большой объём. Существует ограничение на размера файла в 10 Гбайт. Отправьте файл меньшего размера.")
+            await print_max_weight_error(update)
             return 1
 
-    # url case
+    # В случае, если пользователь отправил ссылку
     elif update.message.text is not None:
+        # Загрузка файла с Youtube
         if update.message.text[:32] == "https://www.youtube.com/watch?v=":
-            # Загрузка файла с Youtube
-            try:
-                yt = YouTube(update.message.text)
-                stream = yt.streams.get_audio_only()
+            url = f"https://www.googleapis.com/youtube/v3/videos?id={update.message.text[32:]}&part=contentDetails&key={YOUTUBE_API_KEY}"
+            responce = requests.get(url).json()
+            if not responce["items"]:
+                await update.message.reply_text("Некорректная ссылка или видео в ограниченном доступе.")
+                return 1
+            duration = isodate.parse_duration(responce["items"][0]["contentDetails"]["duration"])
+            video_dur = duration.total_seconds()
+
+            if video_dur <= WEIGHT_FILE_LIMIT:
+                # Run yt-dlp command
+                command = ["yt-dlp", "-f", "bestaudio", "-o", "src/audio.mp3", update.message.text]
                 await update.message.reply_text("Скачивание...")
-                stream.download(filename="src/audio.mp3")
+                subprocess.run(command, check=True)
                 context.user_data["input_audio_file_path"] = "src/audio.mp3"
                 await update.message.reply_text("Скачивание завершено.")
-            except RegexMatchError:
-                await update.message.reply_text("Некорректная ссылка. Обратитесь в справку.")
-                return 1
 
+        # Загрузка файла с Google.Drive
         elif update.message.text[:32] == "https://drive.google.com/file/d/":
-            # Загрузка файла с Google.Drive
-            service = build("drive", "v3",
-                            developerKey="AIzaSyBZ6SsaeN3pr9eassB19qBXKY4tqrY2UdI")
+            service = build("drive", "v3", developerKey=GOOGLE_DRIVE_API_KEY)
             file_id = update.message.text[32:].split('/')[0]
             # Определяем название и вес файла
             try:
@@ -139,10 +171,10 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except HttpError as error:
                 await update.message.reply_text(
                     f"Http ошибка: {error.status_code}. Проверьте, что в настройках доступа к файлу статус (\"Все, у кого есть ссылка\") и url указан корректно.")
-                print(error)
                 return 1
+
             # Проверка веса файла
-            if int(information["size"]) <= 10 * 1024 * 1024 * 1024:
+            if int(information["size"]) <= WEIGHT_FILE_LIMIT:
                 try:
                     # Загрузка файла с сервера
                     request = service.files().get_media(fileId=file_id)
@@ -150,27 +182,31 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     downloader = MediaIoBaseDownload(file, request)
                     done = False
                     await update.message.reply_text("Скачивание...")
+
                     # Скачивание по чанкам
                     while done is False:
                         status, done = downloader.next_chunk()
                     with open("src/" + information["name"], "wb") as f:
                         f.write(file.getvalue())
+
                 except HttpError as error:
                     await update.message.reply_text(f"Http ошибка: {error.status_code}.")
-                    print(error)
                     return 1
-                await audio_processing_with_error_output(update, context, "src/" + information["name"])
+
+                result = await audio_processing_with_error_output(update, context, "src/" + information["name"])
+                if result == 1:
+                    return result
             else:
-                await update.message.reply_text(
-                    "Файл имеет слишком большой объём. Существует ограничение на размер файла в 10 Гбайт. Отправьте файл меньшего размера.")
+                await print_max_weight_error(update)
                 return 1
 
+        # Загрузка файла с Yandex.Disk
         elif update.message.text[:23] == "https://disk.yandex.ru/":
-            # Загрузка файла с Yandex.Disk
-            information = requests.get("https://compute.api.cloud.yandex.net/compute/v1/filesystems/" +
-                                       update.message.text[25:]).json()
+            information = requests.get("https://cloud-api.yandex.net/v1/disk/resources?path=" +
+                                       update.message.text[25:] + "&fields=name,size").json()
             print(information)
-            if int(information["size"]) <= 10 * 1024 * 1024 * 1024:
+
+            if int(information["size"]) <= WEIGHT_FILE_LIMIT:
                 base_url = 'https://cloud-api.yandex.net/v1/disk/public/resources/download?'
                 # Получаем загрузочную ссылку
                 final_url = base_url + "public_key=" + update.message.text[23:]
@@ -178,15 +214,17 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # final_url = base_url + urlencode(dict(public_key=public_key))
                 response = requests.get(final_url)
                 download_url = response.json()['href']
+
                 # Загружаем файл и сохраняем его
                 download_response = requests.get(download_url)
                 await update.message.reply_text("Скачивание завершено.")
                 with open("src/" + information["name"], 'wb') as f:
                     f.write(download_response.content)
-                await audio_processing_with_error_output(update, context, "src/" + information["name"])
+                result = await audio_processing_with_error_output(update, context, "src/" + information["name"])
+                if result == 1:
+                    return result
             else:
-                await update.message.reply_text(
-                    "Файл имеет слишком большой объём. Существует ограничение на размер файла в 10 Гбайт. Отправьте файл меньшего размера.")
+                await print_max_weight_error(update)
                 return 1
 
         else:
@@ -197,13 +235,11 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Открытие клавиатуры пользователю
     reply_keyboard = [["txt", "markdown", "html", "latex"]]
     markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text("Выберете формат конспекта.",
-                                    reply_markup=markup)
+    await update.message.reply_text("Выберете формат конспекта.", reply_markup=markup)
     return 2
 
 
 async def set_output_format(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Установить значение формата конспекта"""
-    print("call recognition")
-    await recognition(context.user_data["input_audio_file_path"], update.message.text)
+    # await recognition(update, context.user_data["input_audio_file_path"], update.message.text)
     return ConversationHandler.END

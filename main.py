@@ -6,6 +6,8 @@ from telegram.ext import (Application, CommandHandler, ContextTypes,
 
 from request_handling import beginning_of_request, detection_file, set_output_format
 
+from config import TELEGRAM_BOT_TOKEN
+
 # Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -44,7 +46,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 - <u><i>Telegram</i></u>: просто пришлите файл в этот чат
 Разрешённые форматы для аудио: mp3, LPCM, OggOpus.
 <u><i>Важно</i></u>: у видео будет взят во внимание только аудиопоток.
-У файлов с дисков установлено ограничение на размер в 10 Гбайт.""",
+У файлов с дисков установлено ограничение на размер в 5 Гбайт.
+Также видео или аудио должно иметь длительность не более 2 часов.""",
                                     disable_web_page_preview=True,
                                     parse_mode=constants.ParseMode.HTML)
 
@@ -66,10 +69,10 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
-    """Запуск бота."""
+    """Запуск бота"""
     # Создать приложение, ввести токен, сделать меню.
     application = (Application.builder()
-                   .token("1693016061:AAEggyjTXXDgGznl_lsC2mTRZU46J1aL4P8")
+                   .token(TELEGRAM_BOT_TOKEN)
                    .post_init(make_menu)
                    .build())
 
