@@ -1,5 +1,10 @@
+import telegram.error
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
+
+import asyncio
+from telethon import TelegramClient
+from telethon.utils import resolve_bot_file_id, get_input_location
 
 import subprocess
 import json
@@ -14,11 +19,14 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 import requests
-from urllib.parse import urlencode
 
 from transcription import recognition
 
+import shutil
+import os
+
 from config import YOUTUBE_API_KEY, GOOGLE_DRIVE_API_KEY
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, TELEGRAM_API_ID, TELEGRAM_API_HASH
 
 # константы
 WEIGHT_FILE_LIMIT = 5 * 1024 * 1024 * 1024
@@ -52,14 +60,16 @@ async def cut_audio_from_file(file_path: str) -> None:
 
 async def audio_processing_with_error_output(update: Update, context: ContextTypes.DEFAULT_TYPE, filename: str):
     """Обработка аудио с выводом возможных ошибок"""
-    audio_file = AudioSegment.from_file(filename)
-    duration = audio_file.duration_seconds
-    if duration <= WEIGHT_FILE_LIMIT:
-        await print_max_duration_error(Update)
-        return 1
-
     count_audio_streams = await has_audio_streams(filename)
+
     if count_audio_streams > 0:
+        audio_file = AudioSegment.from_file(filename)
+        duration = audio_file.duration_seconds
+        print(duration)
+        if duration > FILE_DURATION_LIMIT:
+            await print_max_duration_error(update)
+            return 1
+
         await cut_audio_from_file(filename)
         context.user_data["input_audio_file_path"] = "src/audio.mp3"
     elif count_audio_streams == -1:
@@ -73,8 +83,25 @@ async def audio_processing_with_error_output(update: Update, context: ContextTyp
 
 async def downloading_from_telegram(data_instance) -> None:
     """Загрузка файла из Telegram"""
-    file_instance = await data_instance.get_file()
-    await file_instance.download_to_drive(custom_path="src/" + data_instance.file_name)
+    # url = f"http://127.0.0.1:8081/bot{TELEGRAM_BOT_TOKEN}/{file_instance.file_path}"
+    # responce = requests.get(url).json()
+    # print(responce)
+    # with open("src/" + data_instance.file_name, "w") as f:
+    #     f.write(file)
+
+    loop = asyncio.new_event_loop()
+    client = TelegramClient("bot", TELEGRAM_API_ID, TELEGRAM_API_HASH,
+                            loop=loop)
+    client.start(bot_token=TELEGRAM_BOT_TOKEN)
+    await client.connect()
+    # bot = client.get_input_entity(TELEGRAM_BOT_USERNAME)
+    # last_message = (await client.get_messages(bot, limit=1))[0]
+    # file_id = last_message.file.id
+    document = resolve_bot_file_id(data_instance.file_id)
+    print(document)
+    location = get_input_location(document)
+    loop.run_until_complete(client.download_file(location[1], "src/" + data_instance.file_name,
+                                                 file_size=data_instance.file_size))
 
 
 async def print_max_weight_error(update):
@@ -102,7 +129,11 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if update.message.audio.file_size <= WEIGHT_FILE_LIMIT:
             if update.message.audio.duration <= FILE_DURATION_LIMIT:
                 await update.message.reply_text("Скачивание...")
-                await downloading_from_telegram(update.message.audio)
+                try:
+                    await downloading_from_telegram(update.message.audio)
+                except (telegram.error.TelegramError, telegram.error.TimedOut):
+                    await update.message.reply_text("Ошибка Telegram. Попробуйте ещё раз отправить запрос.")
+                    return 1
                 await update.message.reply_text("Скачивание завершено.")
                 context.user_data["input_audio_file_path"] = "src/" + update.message.audio.file_name
             else:
@@ -117,7 +148,11 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if update.message.video.file_size <= WEIGHT_FILE_LIMIT:
             if update.message.video.duration <= FILE_DURATION_LIMIT:
                 await update.message.reply_text("Скачивание...")
-                await downloading_from_telegram(update.message.video)
+                try:
+                    await downloading_from_telegram(update.message.video)
+                except (telegram.error.TelegramError, telegram.error.TimedOut):
+                    await update.message.reply_text("Ошибка Telegram. Попробуйте ещё раз отправить запрос.")
+                    return 1
                 await cut_audio_from_file("src/" + update.message.video.file_name)
                 context.user_data["input_audio_file_path"] = "src/audio.mp3"
                 await update.message.reply_text("Скачивание завершено.")
@@ -132,7 +167,12 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif update.message.document is not None:
         if update.message.document.file_size <= WEIGHT_FILE_LIMIT:
             await update.message.reply_text("Скачивание...")
+            # try:
             await downloading_from_telegram(update.message.document)
+            # except (telegram.error.TelegramError, telegram.error.TimedOut) as err:
+            #     print(err)
+            #     await update.message.reply_text("Ошибка Telegram. Попробуйте ещё раз отправить запрос.")
+            #     return 1
             result = await audio_processing_with_error_output(
                 update, context, "src/" + update.message.document.file_name)
             if result == 1:
@@ -153,13 +193,20 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             duration = isodate.parse_duration(responce["items"][0]["contentDetails"]["duration"])
             video_dur = duration.total_seconds()
 
-            if video_dur <= WEIGHT_FILE_LIMIT:
-                # Run yt-dlp command
-                command = ["yt-dlp", "-f", "bestaudio", "-o", "src/audio.mp3", update.message.text]
-                await update.message.reply_text("Скачивание...")
-                subprocess.run(command, check=True)
-                context.user_data["input_audio_file_path"] = "src/audio.mp3"
-                await update.message.reply_text("Скачивание завершено.")
+            if video_dur <= FILE_DURATION_LIMIT:
+                try:
+                    # Run yt-dlp command
+                    command = ["yt-dlp", "-f", "bestaudio", "-o", "src/audio.mp3", update.message.text]
+                    await update.message.reply_text("Скачивание...")
+                    subprocess.run(command, check=True)
+                    context.user_data["input_audio_file_path"] = "src/audio.mp3"
+                    await update.message.reply_text("Скачивание завершено.")
+                except subprocess.CalledProcessError:
+                    await update.message.reply_text("Ошибка скачивания файла. Попробуйте ещё раз отправить запрос.")
+                    return 1
+            else:
+                await print_max_duration_error(update)
+                return 1
 
         # Загрузка файла с Google.Drive
         elif update.message.text[:32] == "https://drive.google.com/file/d/":
@@ -173,7 +220,7 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"Http ошибка: {error.status_code}. Проверьте, что в настройках доступа к файлу статус (\"Все, у кого есть ссылка\") и url указан корректно.")
                 return 1
 
-            # Проверка веса файла
+            # Проверка размера файла
             if int(information["size"]) <= WEIGHT_FILE_LIMIT:
                 try:
                     # Загрузка файла с сервера
@@ -202,20 +249,17 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Загрузка файла с Yandex.Disk
         elif update.message.text[:23] == "https://disk.yandex.ru/":
-            information = requests.get("https://cloud-api.yandex.net/v1/disk/resources?path=" +
-                                       update.message.text[25:] + "&fields=name,size").json()
-            print(information)
-
+            information = requests.get("https://cloud-api.yandex.net/v1/disk/public/resources?public_key=" +
+                                       update.message.text + "&fields=name,size").json()
             if int(information["size"]) <= WEIGHT_FILE_LIMIT:
                 base_url = 'https://cloud-api.yandex.net/v1/disk/public/resources/download?'
                 # Получаем загрузочную ссылку
-                final_url = base_url + "public_key=" + update.message.text[23:]
-                # public_key = update.message.text[23:]
-                # final_url = base_url + urlencode(dict(public_key=public_key))
+                final_url = base_url + "public_key=" + update.message.text
                 response = requests.get(final_url)
                 download_url = response.json()['href']
 
                 # Загружаем файл и сохраняем его
+                await update.message.reply_text("Скачивание...")
                 download_response = requests.get(download_url)
                 await update.message.reply_text("Скачивание завершено.")
                 with open("src/" + information["name"], 'wb') as f:
@@ -241,5 +285,8 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def set_output_format(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Установить значение формата конспекта"""
-    # await recognition(update, context.user_data["input_audio_file_path"], update.message.text)
+    await recognition(update, context.user_data["input_audio_file_path"], update.message.text)
+    folder_path = "src"
+    shutil.rmtree(folder_path)
+    os.mkdir(folder_path)
     return ConversationHandler.END

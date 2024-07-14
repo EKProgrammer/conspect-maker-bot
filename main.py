@@ -8,18 +8,16 @@ from request_handling import beginning_of_request, detection_file, set_output_fo
 
 from config import TELEGRAM_BOT_TOKEN
 
-# Enable logging
+# Включаем logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-# set higher logging level for httpx to avoid all GET and POST requests being logged
+# Установляем более высокий уровень регистрации для httpx, чтобы не регистрировать все GET- и POST-запросы
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
 
-# Define a few command handlers. These usually take the two arguments update and
-# context.
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправка сообщения при выполнении команды /start."""
     user = update.effective_user
@@ -46,7 +44,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 - <u><i>Telegram</i></u>: просто пришлите файл в этот чат
 Разрешённые форматы для аудио: mp3, LPCM, OggOpus.
 <u><i>Важно</i></u>: у видео будет взят во внимание только аудиопоток.
-У файлов с дисков установлено ограничение на размер в 5 Гбайт.
+На файлы установлено ограничение на размер в 5 Гбайт.
 Также видео или аудио должно иметь длительность не более 2 часов.""",
                                     disable_web_page_preview=True,
                                     parse_mode=constants.ParseMode.HTML)
