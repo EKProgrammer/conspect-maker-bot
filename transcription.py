@@ -41,21 +41,8 @@ async def recognition(update, audio_file_path, output_format) -> None:
     await update.message.reply_text("Формирование конспекта...")
 
     res = result[0]
-    if res.has_utterances():
-        index = 0
-        while index < len(res.utterances):
-            cnt_symbols = 0
-            paragraphs = []
-            while index < len(res.utterances) and cnt_symbols + len(res.utterances[index].text) <= 4000:
-                paragraphs.append(res.utterances[index].text)
-                cnt_symbols += len(res.utterances[index].text)
-                index += 1
-            if not paragraphs:
-                paragraphs.append(res.utterances[index].text)
-                cnt_symbols += len(res.utterances[index].text)
-                index += 1
-            await creating_conspect(''.join(paragraphs), filename, output_format)
-
+    if len(res.normalized_text) > 0:
+        await creating_conspect(res.normalized_text, filename, output_format)
         await update.message.reply_text("Результат запроса:")
         await update.message.reply_document(filename)
         os.remove(filename)

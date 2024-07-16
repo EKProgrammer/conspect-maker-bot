@@ -2,10 +2,6 @@ import telegram.error
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
-import asyncio
-from telethon import TelegramClient
-from telethon.utils import resolve_bot_file_id, get_input_location
-
 import subprocess
 import json
 
@@ -26,7 +22,6 @@ import shutil
 import os
 
 from config import YOUTUBE_API_KEY, GOOGLE_DRIVE_API_KEY
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, TELEGRAM_API_ID, TELEGRAM_API_HASH
 
 # константы
 WEIGHT_FILE_LIMIT = 5 * 1024 * 1024 * 1024
@@ -83,25 +78,8 @@ async def audio_processing_with_error_output(update: Update, context: ContextTyp
 
 async def downloading_from_telegram(data_instance) -> None:
     """Загрузка файла из Telegram"""
-    # url = f"http://127.0.0.1:8081/bot{TELEGRAM_BOT_TOKEN}/{file_instance.file_path}"
-    # responce = requests.get(url).json()
-    # print(responce)
-    # with open("src/" + data_instance.file_name, "w") as f:
-    #     f.write(file)
-
-    loop = asyncio.new_event_loop()
-    client = TelegramClient("bot", TELEGRAM_API_ID, TELEGRAM_API_HASH,
-                            loop=loop)
-    client.start(bot_token=TELEGRAM_BOT_TOKEN)
-    await client.connect()
-    # bot = client.get_input_entity(TELEGRAM_BOT_USERNAME)
-    # last_message = (await client.get_messages(bot, limit=1))[0]
-    # file_id = last_message.file.id
-    document = resolve_bot_file_id(data_instance.file_id)
-    print(document)
-    location = get_input_location(document)
-    loop.run_until_complete(client.download_file(location[1], "src/" + data_instance.file_name,
-                                                 file_size=data_instance.file_size))
+    file_instance = await data_instance.get_file()
+    await file_instance.download_to_drive(custom_path="src/" + data_instance.file_name)
 
 
 async def print_max_weight_error(update):
@@ -285,7 +263,10 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def set_output_format(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Установить значение формата конспекта"""
-    await recognition(update, context.user_data["input_audio_file_path"], update.message.text)
+    try:
+        await recognition(update, context.user_data["input_audio_file_path"], update.message.text)
+    except requests.exceptions.JSONDecodeError:
+        await update.message.reply_text("Ошибка запроса к YANDEX GPT.")
     folder_path = "src"
     shutil.rmtree(folder_path)
     os.mkdir(folder_path)
