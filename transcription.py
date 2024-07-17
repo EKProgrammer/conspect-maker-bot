@@ -30,6 +30,7 @@ async def recognition(update, audio_file_path, output_format) -> None:
     result = model.transcribe_file(audio_file_path)
     await update.message.reply_text("Транскрибация завершена.")
 
+    # Название выходного файла
     file_extensions = {
         "txt": "txt",
         "markdown": "md",
@@ -45,6 +46,7 @@ async def recognition(update, audio_file_path, output_format) -> None:
         await creating_conspect(res.normalized_text, filename, output_format)
         await update.message.reply_text("Результат запроса:")
         await update.message.reply_document(filename)
+        await update.message.reply_text("Важно, что данный документ является черновым. Необходима дополнительная корректировка текста человеком.")
         os.remove(filename)
     else:
         await update.message.reply_text("Файл содержит тишину вместо звука.")

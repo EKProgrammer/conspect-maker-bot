@@ -22,7 +22,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправка сообщения при выполнении команды /start."""
     user = update.effective_user
     await update.message.reply_html(
-        rf"Здравствуйте, {user.mention_html()}! Это бот, который умеет конспектировать лекции. В меню указаны доступные команды."
+        rf"Здравствуйте, {user.mention_html()}! Это бот, который умеет конспектировать лекции на русском языке. В меню указаны доступные команды."
     )
 
 
@@ -45,7 +45,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 Разрешённые форматы для аудио: mp3, LPCM, OggOpus.
 <u><i>Важно</i></u>: у видео будет взят во внимание только аудиопоток.
 На файлы установлено ограничение на размер в 5 Гбайт.
-Также видео или аудио должно иметь длительность не более 2 часов.""",
+Также видео или аудио должно иметь длительность не более 2 часов.
+Если Вы отправляете медиа через Telegram, то размер файла должен не должен превышать 20 Мбайт.""",
                                     disable_web_page_preview=True,
                                     parse_mode=constants.ParseMode.HTML)
 
