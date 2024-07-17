@@ -232,7 +232,7 @@ async def detection_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     await update.message.reply_text("Скачивание...")
                     download_response = requests.get(download_url)
                     await update.message.reply_text("Скачивание завершено.")
-                    with open("src/" + information["name"], 'wb') as f:
+                    with open("src/" + information["name"], "wb") as f:
                         f.write(download_response.content)
                     result = await audio_processing_with_error_output(update, context, "src/" + information["name"])
                     if result == 1:
